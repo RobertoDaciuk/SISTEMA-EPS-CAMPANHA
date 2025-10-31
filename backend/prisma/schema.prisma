@@ -1,0 +1,948 @@
+// ============================================================================
+// SCHEMA PRISMA - EPS CAMPANHAS (VERSÃO 6.1 - Auto-Replicação de Cartelas)
+// ============================================================================
+// Descrição: Define toda a estrutura do banco de dados PostgreSQL para a
+// plataforma SaaS de gamificação "EPS Campanhas".
+//
+// Alterações na Versão 6.1 (Sprint Cartelas Infinitas):
+// - NOVOS ENUMS: ModoCartelas, TipoIncremento - suporte para cartelas infinitas
+// - Campanha: Adicionado modoCartelas, tipoIncremento, fatorIncremento, limiteCartelas
+// - Sistema de geração dinâmica de cartelas a partir de cartela base
+//
+// Alterações na Versão 6.0 (Sprint Admin Campanhas - Eventos Especiais):
+// - NOVO MODEL: EventoEspecial - multiplicadores de prêmios (2x, 3x, 4x...)
+// - Campanha: Adicionado imagemCampanha, tags, regras, criadoPorId
+// - EnvioVenda: Adicionado dadosValidacao (JSON) para armazenar dados do produto validado
+// - Sistema de notificações para eventos especiais ativos
+// - Analytics avançado por campanha
+//
+// Alterações na Versão 5.0 (Sprint 17 - Tarefa 39 - Hierarquia Matriz/Filial):
+// - NOVA HIERARQUIA: Óticas podem ser marcadas como MATRIZ com FILIAIS vinculadas
+// - Optica: Adicionado campo ehMatriz (Boolean) para identificar matrizes
+// - Optica: Adicionado auto-relação matrizId/matriz/filiais para hierarquia
+// - Optica: Adicionado relação M2M campanhasAlvo (targeting de campanhas)
+// - Campanha: Adicionado relação M2M oticasAlvo (óticas que podem participar)
+// - Campanha: Adicionado campo paraTodasOticas (bypass do targeting)
+// - VALIDAÇÃO: CNPJ agora valida contra ótica do vendedor OU sua matriz
+// - TARGETING: Campanhas podem ser direcionadas para Matriz e/ou Filiais específicas
+// - RANKING: Gerentes de Matriz veem ranking separado por filial
+//
+// Alterações na Versão 4.3 (Sprint Refactor - Tarefa 41.1 - Nova Economia Interna):
+// - REFATORAÇÃO COMPLETA da economia do sistema: separação entre "Pontos" e "Moedinhas"
+// - Campanha: pontosPorCartela → moedinhasPorCartela (moeda virtual)
+// - Campanha: valorPorCartela → pontosReaisPorCartela (valor em R$, 1 Ponto = R$ 1,00)
+// - Usuario: saldoPontos → saldoMoedinhas (saldo para resgate de prêmios)
+// - Usuario: pontosTotais → rankingMoedinhas (base do ranking, nunca subtrai)
+// - Premio: custoPontos → custoMoedinhas (custo em moeda virtual)
+// - LÓGICA: Vendedor recebe "Pontos" (R$) E "Moedinhas" ao completar cartela
+// - Ranking baseado apenas em "Moedinhas" acumuladas (não afetado por resgates)
+//
+// Alterações na Versão 4.2 (Sprint 16.5 - Tarefa 38.6 - Correção Spillover):
+// - Adicionado campo ordem (Int) ao RequisitoCartela para suportar spillover correto
+// - Adicionado index em RequisitoCartela.ordem para otimizar queries de spillover
+// - CRÍTICO: Este campo permite agrupar requisitos relacionados entre cartelas
+//   (ex: "Lentes X" com ordem=1 nas Cartelas 1, 2 e 3 são o mesmo requisito lógico)
+//
+// Alterações na Versão 4.1 (Sprint 4 - Validação de Vendas):
+// - Adicionado campo mapeamentoPlanilhaSalvo ao Usuario (tipo Json, nullable)
+//   para armazenar preferências de mapeamento de colunas da planilha
+//
+// Alterações na Versão 4.0 (Sprint 3 - Rule Builder):
+// - Adicionado enums TipoUnidade, CampoVerificacao, OperadorCondicao
+// - Criado model CondicaoRequisito (receitas de validação dinâmicas)
+// - Refatorado RequisitoCartela (removido nomeProduto, adicionado tipoUnidade e condicoes[])
+// - Refatorado EnvioVenda (removido produtoVendido, requisito agora é obrigatório)
+//
+// Alterações na Versão 3.0 (Sprint 2 - Reset de Senha):
+// - Adicionado campos tokenResetarSenha e tokenResetarSenhaExpira no Usuario
+//
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// ENUMS - Tipos Fixos do Sistema
+// ============================================================================
+
+/// Papel do usuário no sistema (hierarquia de permissões)
+enum PapelUsuario {
+  ADMIN      // Acesso total, valida vendas, configura campanhas, aprova cadastros
+  GERENTE    // Gerencia vendedores, recebe comissão percentual
+  VENDEDOR   // Submete vendas, ganha pontos, resgata prêmios
+}
+
+/// Status do usuário no fluxo de registro e aprovação
+enum StatusUsuario {
+  PENDENTE   // Usuário se registrou mas ainda não foi aprovado pelo Admin
+  ATIVO      // Usuário aprovado pelo Admin, pode acessar o sistema normalmente
+  BLOQUEADO  // Usuário bloqueado pelo Admin, não pode fazer login
+}
+
+/// Status do envio de venda (fluxo de validação)
+enum StatusEnvioVenda {
+  EM_ANALISE      // Inicial: aguardando validação do Admin
+  VALIDADO        // Admin aprovou: pontos creditados, cartela alocada
+  REJEITADO       // Admin rejeitou: não credita pontos
+  CONFLITO_MANUAL // Duplicata detectada: requer intervenção manual do Admin
+}
+
+/// Status do pagamento financeiro (para Vendedor e Gerente)
+enum StatusPagamento {
+  PENDENTE // Aguardando processamento
+  PAGO     // Pagamento confirmado e realizado
+}
+
+/// Nível de gamificação do vendedor (baseado em rankingMoedinhas)
+enum NivelVendedor {
+  BRONZE   // Nível inicial
+  PRATA    // Ex: >= 5.000 moedinhas acumuladas
+  OURO     // Ex: >= 15.000 moedinhas acumuladas
+  DIAMANTE // Ex: >= 30.000 moedinhas acumuladas
+}
+
+// ============================================================================
+// ENUMS - Rule Builder (Sprint 3)
+// ============================================================================
+
+/// Tipo de unidade para contabilização de vendas
+enum TipoUnidade {
+  PAR      // Venda contada em PARES (ex: 1 venda = 1 par de lentes)
+  UNIDADE  // Venda contada em UNIDADES (ex: 1 venda = 1 armação)
+}
+
+/// Campo do pedido que será verificado na condição
+enum CampoVerificacao {
+  NOME_PRODUTO      // Nome/descrição do produto vendido
+  CODIGO_PRODUTO    // Código/SKU do produto
+  VALOR_VENDA       // Valor monetário da venda (para regras de ticket mínimo)
+  CATEGORIA_PRODUTO // Categoria do produto (ex: "LENTES", "ARMACOES", "ACESSORIOS")
+}
+
+/// Operador lógico da condição de validação
+enum OperadorCondicao {
+  CONTEM        // Campo contém o valor (case-insensitive, para strings)
+  NAO_CONTEM    // Campo não contém o valor
+  IGUAL_A       // Campo é exatamente igual ao valor
+  NAO_IGUAL_A   // Campo é diferente do valor
+  MAIOR_QUE     // Campo é numericamente maior que o valor (para VALOR_VENDA)
+  MENOR_QUE     // Campo é numericamente menor que o valor
+}
+
+// ============================================================================
+// ENUMS - Auto-Replicação de Cartelas (Sprint 6.1)
+// ============================================================================
+
+/// Modo de criação de cartelas
+enum ModoCartelas {
+  MANUAL            // Admin cria cada cartela manualmente
+  AUTO_REPLICANTE   // Sistema gera cartelas automaticamente a partir da cartela base
+}
+
+/// Tipo de incremento para auto-replicação
+enum TipoIncremento {
+  SEM_INCREMENTO    // Cartelas sempre com mesma quantidade (ex: sempre 5 pares)
+  MULTIPLICADOR     // Incremento customizável (ex: +5 pares por cartela)
+}
+
+// ============================================================================
+// MODEL: Optica (ATUALIZADO - Sprint 17)
+// ============================================================================
+/// Representa uma ótica parceira da plataforma.
+///
+/// Alterações da Versão 5.0 (Sprint 17 - Hierarquia Matriz/Filial):
+/// - ADICIONADO: campo ehMatriz (Boolean) - indica se é uma Matriz
+/// - ADICIONADO: auto-relação matrizId/matriz/filiais - hierarquia Matriz→Filial
+/// - ADICIONADO: relação M2M campanhasAlvo - targeting de campanhas por ótica
+model Optica {
+  /// ID único da ótica (UUID v4)
+  id String @id @default(uuid())
+
+  /// CNPJ da ótica (único, obrigatório para identificação fiscal)
+  cnpj String @unique
+
+  /// Nome fantasia ou razão social da ótica
+  nome String
+
+  /// Endereço completo da ótica (opcional)
+  endereco String?
+
+  /// Cidade onde a ótica está localizada
+  cidade String?
+
+  /// Estado (UF) onde a ótica está localizada
+  estado String?
+
+  /// Telefone de contato da ótica
+  telefone String?
+
+  /// Email de contato da ótica
+  email String?
+
+  /// Indica se a ótica está ativa no sistema
+  ativa Boolean @default(true)
+
+  // --- NOVO: Hierarquia Matriz/Filial (Sprint 17) ---
+
+  /// Indica se esta ótica é uma Matriz (pode ter filiais vinculadas)
+  ehMatriz Boolean @default(false)
+
+  /// Controle de visibilidade do ranking interno para vendedores da ótica
+  /// Se true: Vendedores veem o ranking da equipe (baseado em Moedinhas)
+  /// Se false: Vendedores não veem ranking, apenas o gerente
+  rankingVisivelParaVendedores Boolean @default(true)
+
+  /// ID da ótica Matriz (se esta ótica for uma Filial)
+  matrizId String?
+
+  /// Referência à ótica Matriz (apenas para Filiais)
+  matriz Optica? @relation("MatrizFiliais", fields: [matrizId], references: [id], onDelete: SetNull)
+
+  /// Lista de óticas Filiais (apenas para Matrizes)
+  filiais Optica[] @relation("MatrizFiliais")
+
+  // --- Relações ---
+
+  /// Lista de usuários (Vendedores e Gerentes) vinculados a esta ótica
+  usuarios Usuario[] @relation("OpticaUsuarios")
+
+  /// Campanhas nas quais esta ótica (ou seus vendedores) podem participar (Sprint 17)
+  campanhasAlvo Campanha[] @relation("CampanhasOticas")
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([cnpj])
+  @@index([ativa])
+  @@index([ehMatriz])
+  @@index([matrizId])
+  @@map("opticas")
+}
+
+// ============================================================================
+// MODEL: Usuario (ATUALIZADO - Sprint 4)
+// ============================================================================
+/// Representa todos os usuários do sistema (Admin, Gerente, Vendedor).
+///
+/// Alterações da Versão 4.1:
+/// - ADICIONADO: campo mapeamentoPlanilhaSalvo (Json, nullable)
+///   para armazenar preferências de mapeamento de colunas da planilha
+model Usuario {
+  /// ID único do usuário (UUID v4)
+  id String @id @default(uuid())
+
+  /// Email único para login
+  email String @unique
+
+  /// CPF único (opcional, pode ser necessário para pagamentos)
+  cpf String? @unique
+
+  /// Nome completo do usuário
+  nome String
+
+  whatsapp String?
+
+  /// Hash da senha (bcrypt, argon2, etc.) - NUNCA armazene senha em texto puro
+  senhaHash String @db.Text
+
+  /// URL do avatar (opcional, para perfil)
+  avatarUrl String?
+
+  /// Papel do usuário no sistema (ADMIN, GERENTE, VENDEDOR)
+  papel PapelUsuario
+
+  /// Status do usuário no fluxo de aprovação (PENDENTE, ATIVO, BLOQUEADO)
+  status StatusUsuario @default(PENDENTE)
+
+  // --- Campos de Gamificação (apenas para VENDEDOR) ---
+
+  /// Saldo de Moedinhas EPS (moeda virtual interna) disponível para resgate de prêmios.
+  /// SUBTRAI ao resgatar prêmios. NÃO afeta o ranking.
+  saldoMoedinhas Int @default(0)
+
+  /// Total de Moedinhas EPS acumuladas ao longo do tempo (base do ranking).
+  /// NUNCA subtrai, sempre cresce. Define posição no ranking global.
+  rankingMoedinhas Int @default(0)
+
+  /// NOVO: Total de Pontos Reais (R$) acumulados ao longo do tempo (base do ranking para Gerente/Admin).
+  /// NUNCA subtrai, sempre cresce.
+  rankingPontosReais Decimal @default(0) @db.Decimal(10, 2)
+
+  /// Nível de gamificação atual (atualizado baseado em rankingMoedinhas)
+  nivel NivelVendedor @default(BRONZE)
+
+  // --- Campos para Reset de Senha ---
+
+  /// Hash do token de reset de senha (SHA-256)
+  tokenResetarSenha String? @unique
+
+  /// Data/hora de expiração do token de reset
+  tokenResetarSenhaExpira DateTime?
+
+  // --- Campos para Validação de Vendas (Admin) - Sprint 4 ---
+
+  /// Armazena as preferências de mapeamento de colunas da planilha salvas pelo Admin.
+  /// Estrutura JSON esperada:
+  /// {
+  ///   "Coluna A": "NOME_PRODUTO",
+  ///   "Coluna B": "CODIGO_PRODUTO",
+  ///   "Coluna C": "VALOR_VENDA",
+  ///   "Coluna D": "NUMERO_PEDIDO"
+  /// }
+  mapeamentoPlanilhaSalvo Json?
+
+  // --- Relação com Ótica Parceira ---
+
+  /// ID da ótica à qual este usuário pertence (apenas para GERENTE e VENDEDOR)
+  opticaId String?
+
+  /// Referência à Ótica parceira
+  optica Optica? @relation("OpticaUsuarios", fields: [opticaId], references: [id], onDelete: SetNull)
+
+  // --- Relações de Hierarquia (Gerente <-> Vendedor) ---
+
+  /// ID do gerente responsável (apenas para VENDEDOR)
+  gerenteId String?
+
+  /// Referência ao Gerente (se este usuário for VENDEDOR)
+  gerente Usuario? @relation("GerenteVendedores", fields: [gerenteId], references: [id], onDelete: SetNull)
+
+  /// Lista de Vendedores gerenciados (se este usuário for GERENTE)
+  vendedores Usuario[] @relation("GerenteVendedores")
+
+  // --- Relações de Atividades ---
+
+  /// Envios de venda submetidos pelo vendedor
+  enviosVenda EnvioVenda[]
+
+  /// Histórico de resgates de prêmios
+  resgatesPremios ResgatePremio[]
+
+  /// Relatórios financeiros relacionados (pagamentos)
+  relatoriosFinanceiros RelatorioFinanceiro[]
+
+  /// Notificações recebidas (feed de atividades)
+  notificacoes Notificacao[]
+
+  /// Ledger de cartelas concluídas (livro-razão)
+  cartelasConcluidas CartelaConcluida[]
+
+  /// Campanhas criadas por este administrador (NOVO - Sprint 6.0)
+  campanhasCriadas Campanha[] @relation("CampanhasCriadas")
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([email])
+  @@index([cpf])
+  @@index([gerenteId])
+  @@index([papel])
+  @@index([status])
+  @@index([opticaId])
+  @@index([tokenResetarSenha])
+  @@map("usuarios")
+}
+
+// ============================================================================
+// MODEL: Campanha (ATUALIZADO - Sprint 6.0)
+// ============================================================================
+/// Representa uma campanha de vendas com regras de cartelas e pontuação.
+///
+/// Alterações da Versão 6.0 (Sprint Admin Campanhas):
+/// - ADICIONADO: imagemCampanha - URL do banner/imagem da campanha
+/// - ADICIONADO: tags - Array de tags para categorização
+/// - ADICIONADO: regras - Conteúdo HTML/Markdown das regras da campanha
+/// - ADICIONADO: criadoPorId - ID do admin que criou a campanha
+///
+/// Alterações da Versão 5.0 (Sprint 17 - Targeting por Óticas):
+/// - ADICIONADO: relação M2M oticasAlvo - define quais óticas podem participar
+/// - ADICIONADO: campo paraTodasOticas - bypass do targeting (campanha para todos)
+model Campanha {
+  /// ID único da campanha (UUID v4)
+  id String @id @default(uuid())
+
+  /// Título da campanha (ex: "Campanha Lentes Q1 2025")
+  titulo String
+
+  /// Descrição detalhada da campanha
+  descricao String @db.Text
+
+  /// Data de início da campanha
+  dataInicio DateTime
+
+  /// Data de término da campanha
+  dataFim DateTime
+
+  /// Moedinhas virtuais (gamificação) creditadas ao vendedor por cartela completada.
+  /// Usadas para ranking e resgate de prêmios.
+  moedinhasPorCartela Int
+
+  /// Pontos equivalentes a R$ (1 Ponto = R$ 1,00) que o vendedor recebe por cartela completada.
+  /// Gera RelatorioFinanceiro para pagamento real.
+  pontosReaisPorCartela Decimal @db.Decimal(10, 2)
+
+  /// Status da campanha (ex: "ATIVA", "PAUSADA", "CONCLUIDA")
+  status String @default("ATIVA")
+
+  /// Percentual de comissão que o gerente recebe (0.0 a 1.0, ex: 0.10 = 10%)
+  percentualGerente Decimal @db.Decimal(5, 4) @default(0.0)
+
+  // --- NOVO: Targeting de Campanhas (Sprint 17) ---
+
+  /// Indica se a campanha é para todas as óticas (ignora oticasAlvo se true)
+  paraTodasOticas Boolean @default(false)
+
+  // --- NOVO: Campos Adicionais (Sprint 6.0) ---
+
+  /// URL da imagem/banner da campanha (opcional)
+  imagemCampanha String?
+
+  /// Tags para categorização (ex: ["Lentes", "Q1 2025", "Premium"])
+  tags String[] @default([])
+
+  /// Regras completas da campanha (HTML/Markdown) - editável pelo Admin
+  regras String? @db.Text
+
+  /// ID do usuário administrador que criou esta campanha
+  criadoPorId String?
+
+  // --- NOVO: Auto-Replicação de Cartelas (Sprint 6.1) ---
+
+  /// Modo de criação de cartelas (MANUAL ou AUTO_REPLICANTE)
+  modoCartelas ModoCartelas @default(MANUAL)
+
+  /// Tipo de incremento para auto-replicação (apenas se modoCartelas = AUTO_REPLICANTE)
+  tipoIncremento TipoIncremento @default(SEM_INCREMENTO)
+
+  /// Fator de incremento (ex: 5 significa +5 unidades por cartela)
+  fatorIncremento Int @default(0)
+
+  /// Limite máximo de cartelas (null = ilimitado)
+  limiteCartelas Int?
+
+  // --- Relações ---
+
+  /// Referência ao admin criador (Sprint 6.0)
+  criadoPor Usuario? @relation("CampanhasCriadas", fields: [criadoPorId], references: [id], onDelete: SetNull)
+
+  /// Lista de Óticas (Matriz e/ou Filiais) que são alvo desta campanha (ignorado se paraTodasOticas=true)
+  oticasAlvo Optica[] @relation("CampanhasOticas")
+
+  /// Regras de cartelas desta campanha (Cartela 1, 2, 3, etc.)
+  cartelas RegraCartela[]
+
+  /// Envios de venda vinculados a esta campanha
+  enviosVenda EnvioVenda[]
+
+  /// Relatórios financeiros gerados para esta campanha
+  relatoriosFinanceiros RelatorioFinanceiro[]
+
+  /// Ledger de cartelas concluídas (livro-razão)
+  cartelasConcluidas CartelaConcluida[]
+
+  /// Eventos especiais (multiplicadores 2x, 3x, 4x...) - NOVO Sprint 6.0
+  eventosEspeciais EventoEspecial[]
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([status])
+  @@index([dataInicio, dataFim])
+  @@index([criadoPorId])
+  @@map("campanhas")
+}
+
+// ============================================================================
+// MODEL: RegraCartela
+// ============================================================================
+/// Define uma cartela específica de uma campanha (ex: Cartela 1, Cartela 2).
+model RegraCartela {
+  /// ID único da regra de cartela (UUID v4)
+  id String @id @default(uuid())
+
+  /// Número sequencial da cartela (1, 2, 3, ...)
+  numeroCartela Int
+
+  /// Descrição da cartela (ex: "Cartela Bronze - Produtos Básicos")
+  descricao String?
+
+  /// ID da campanha à qual esta cartela pertence
+  campanhaId String
+
+  /// Referência à campanha
+  campanha Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+
+  /// Lista de requisitos (produtos) desta cartela
+  requisitos RequisitoCartela[]
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@unique([campanhaId, numeroCartela])
+  @@index([campanhaId])
+  @@map("regras_cartelas")
+}
+
+// ============================================================================
+// MODEL: RequisitoCartela
+// ============================================================================
+/// Define um requisito (card) de uma cartela com validação dinâmica via Rule Builder.
+model RequisitoCartela {
+  /// ID único do requisito (UUID v4)
+  id String @id @default(uuid())
+
+  /// Título/descrição do card mostrado ao vendedor (ex: "Lentes BlueProtect Max")
+  descricao String
+
+  /// Quantidade necessária para completar este requisito
+  quantidade Int
+
+  /// Tipo de unidade para contabilização (PAR ou UNIDADE)
+  tipoUnidade TipoUnidade @default(UNIDADE)
+
+  /// Ordem do requisito dentro da cartela (1, 2, 3...)
+  /// CRÍTICO para spillover: requisitos com a mesma ordem entre cartelas diferentes
+  /// são considerados "relacionados" (ex: "Lentes X" ordem=1 em todas as cartelas)
+  ordem Int
+
+  /// ID da regra de cartela à qual este requisito pertence
+  regraCartelaId String
+
+  /// Referência à regra de cartela
+  regraCartela RegraCartela @relation(fields: [regraCartelaId], references: [id], onDelete: Cascade)
+
+  /// Lista de condições de validação (Rule Builder)
+  condicoes CondicaoRequisito[]
+
+  /// Envios de venda submetidos contra este requisito
+  enviosVenda EnvioVenda[]
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([regraCartelaId])
+  @@index([ordem])
+  @@map("requisitos_cartelas")
+}
+
+// ============================================================================
+// MODEL: CondicaoRequisito
+// ============================================================================
+/// Representa uma condição individual do Rule Builder.
+model CondicaoRequisito {
+  /// ID único da condição (UUID v4)
+  id String @id @default(uuid())
+
+  /// Campo do pedido que será verificado
+  campo CampoVerificacao
+
+  /// Operador lógico da comparação
+  operador OperadorCondicao
+
+  /// Valor de referência para a comparação
+  valor String
+
+  /// ID do requisito ao qual esta condição pertence
+  requisitoId String
+
+  /// Referência ao requisito
+  requisito RequisitoCartela @relation(fields: [requisitoId], references: [id], onDelete: Cascade)
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([requisitoId])
+  @@map("condicoes_requisitos")
+}
+
+// ============================================================================
+// MODEL: EnvioVenda (ATUALIZADO - Sprint 6.0)
+// ============================================================================
+/// Representa uma submissão de venda feita pelo vendedor.
+///
+/// Alterações da Versão 6.0:
+/// - ADICIONADO: dadosValidacao (JSON) - armazena dados do produto validado
+///   (nome completo, código, valor, etc. vindo da planilha)
+model EnvioVenda {
+  /// ID único do envio (UUID v4)
+  id String @id @default(uuid())
+
+  /// Número do pedido (vindo do sistema externo ou planilha)
+  numeroPedido String
+
+  /// Status atual do envio (EM_ANALISE, VALIDADO, REJEITADO, CONFLITO_MANUAL)
+  status StatusEnvioVenda @default(EM_ANALISE)
+
+  /// Data/hora da submissão
+  dataEnvio DateTime @default(now())
+
+  // --- Campos de Log (preenchidos pelo Admin) ---
+
+  /// Motivo da rejeição (se status = REJEITADO)
+  motivoRejeicao String? @db.Text
+
+  /// Informações sobre conflito/duplicata (se status = CONFLITO_MANUAL)
+  infoConflito String? @db.Text
+
+  // --- Campos de Alocação (preenchidos pelo robô de alocação) ---
+
+  /// Número da cartela na qual este envio foi alocado (1, 2, 3, ...)
+  numeroCartelaAtendida Int?
+
+  /// Data/hora da validação e alocação
+  dataValidacao DateTime?
+
+  /// Dados completos do produto validado (NOVO - Sprint 6.0)
+  /// Estrutura: { nomeProduto, codigoProduto, valorVenda, categoriaProduto, etc. }
+  dadosValidacao Json?
+
+  // --- Relações ---
+
+  /// ID do vendedor que submeteu
+  vendedorId String
+
+  /// Referência ao vendedor
+  vendedor Usuario @relation(fields: [vendedorId], references: [id], onDelete: Cascade)
+
+  /// ID da campanha associada
+  campanhaId String
+
+  /// Referência à campanha
+  campanha Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+
+  /// ID do requisito (card) contra o qual a venda foi submetida
+  requisitoId String
+
+  /// Referência ao requisito
+  requisito RequisitoCartela @relation(fields: [requisitoId], references: [id], onDelete: Restrict)
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([vendedorId])
+  @@index([campanhaId])
+  @@index([status])
+  @@index([numeroPedido])
+  @@index([requisitoId])
+  @@map("envios_vendas")
+}
+
+// ============================================================================
+// MODEL: Premio
+// ============================================================================
+/// Catálogo de prêmios disponíveis para resgate com saldoMoedinhas.
+model Premio {
+  /// ID único do prêmio (UUID v4)
+  id String @id @default(uuid())
+
+  /// Nome do prêmio (ex: "iPhone 15 Pro", "Vale-Compras R$ 500")
+  nome String
+
+  /// Descrição detalhada do prêmio
+  descricao String @db.Text
+
+  /// URL da imagem do prêmio
+  imageUrl String?
+
+  /// Custo em Moedinhas EPS (moeda virtual) necessário para resgatar este prêmio.
+  /// Deduzido do saldoMoedinhas do vendedor ao resgatar.
+  custoMoedinhas Int
+
+  /// Quantidade disponível em estoque
+  estoque Int @default(0)
+
+  /// Indica se o prêmio está ativo para resgate
+  ativo Boolean @default(true)
+
+  /// Histórico de resgates deste prêmio
+  resgates ResgatePremio[]
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([ativo])
+  @@map("premios")
+}
+
+// ============================================================================
+// MODEL: ResgatePremio (REFACTORED - Fluxo de Logística de Prêmios)
+// ============================================================================
+/// Histórico de resgates de prêmios pelos vendedores.
+/// Agora é uma "ordem de serviço" que reflete o fluxo logístico.
+model ResgatePremio {
+  /// ID único do resgate (UUID v4)
+  id String @id @default(uuid())
+
+  /// Data/hora da solicitação do resgate
+  dataSolicitacao DateTime @default(now())
+
+  /// Status do fluxo logístico do resgate
+  status StatusResgate @default(SOLICITADO)
+
+  /// Data/hora da última atualização (qualquer mudança de status)
+  dataAtualizacao DateTime @updatedAt
+
+  /// Motivo do cancelamento (preenchido apenas se status = CANCELADO)
+  motivoCancelamento String? @db.Text
+
+  /// ID do vendedor que resgatou
+  vendedorId String
+
+  /// Referência ao vendedor
+  vendedor Usuario @relation(fields: [vendedorId], references: [id], onDelete: Cascade)
+
+  /// ID do prêmio resgatado
+  premioId String
+
+  /// Referência ao prêmio
+  premio Premio @relation(fields: [premioId], references: [id], onDelete: Cascade)
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([vendedorId])
+  @@index([premioId])
+  @@index([status])
+  @@map("resgates_premios")
+}
+
+// ============================================================================
+// NOVO ENUM - Status do fluxo de logística de resgate de prêmios
+// ============================================================================
+enum StatusResgate {
+  SOLICITADO // Vendedor pediu, aguardando processamento do Admin
+  ENVIADO    // Admin processou e enviou o prêmio
+  CANCELADO  // Admin cancelou (ex: falta de estoque) e estornou os pontos
+}
+
+// ============================================================================
+// MODEL: RelatorioFinanceiro
+// ============================================================================
+/// Registros de pagamentos devidos a Vendedores e Gerentes.
+model RelatorioFinanceiro {
+  /// ID único do relatório (UUID v4)
+  id String @id @default(uuid())
+
+  /// Valor em reais a ser pago
+  valor Decimal @db.Decimal(10, 2)
+
+  /// Status do pagamento (PENDENTE, PAGO)
+  status StatusPagamento @default(PENDENTE)
+
+  /// Tipo de pagamento: "VENDEDOR" (por cartela) ou "GERENTE" (comissão)
+  tipo String
+
+  /// Data/hora de geração do relatório
+  dataGerado DateTime @default(now())
+
+  /// Data/hora do pagamento (quando status = PAGO)
+  dataPagamento DateTime?
+
+  /// Observações adicionais
+  observacoes String? @db.Text
+
+  /// ID do usuário beneficiário (Vendedor ou Gerente)
+  usuarioId String
+
+  /// Referência ao usuário
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  /// ID da campanha relacionada
+  campanhaId String
+
+  /// Referência à campanha
+  campanha Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([usuarioId])
+  @@index([campanhaId])
+  @@index([status])
+  @@index([tipo])
+  @@map("relatorios_financeiros")
+}
+
+// ============================================================================
+// MODEL: Notificacao
+// ============================================================================
+/// Sistema de notificações para o "Feed de Atividades".
+model Notificacao {
+  /// ID único da notificação (UUID v4)
+  id String @id @default(uuid())
+
+  /// Mensagem da notificação (ex: "Sua venda #1234 foi validada! +500 pontos")
+  mensagem String @db.Text
+
+  /// Indica se a notificação foi lida pelo usuário
+  lida Boolean @default(false)
+
+  /// URL de link opcional (ex: redirecionar para detalhes da venda)
+  linkUrl String?
+
+  /// Data/hora de criação da notificação
+  dataCriacao DateTime @default(now())
+
+  /// ID do usuário destinatário
+  usuarioId String
+
+  /// Referência ao usuário
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([usuarioId])
+  @@index([lida])
+  @@map("notificacoes")
+}
+
+// ============================================================================
+// MODEL: ConfiguracaoGlobal
+// ============================================================================
+/// Armazena configurações globais do sistema.
+model ConfiguracaoGlobal {
+  /// ID único da configuração (UUID v4)
+  id String @id @default(uuid())
+
+  /// Chave da configuração (ex: "PONTOS_NIVEL_PRATA", "TAXA_CONVERSAO_REAL")
+  chave String @unique
+
+  /// Valor da configuração (armazenado como string, parse conforme necessário)
+  valor String
+
+  /// Descrição da configuração (para documentação)
+  descricao String @db.Text
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([chave])
+  @@map("configuracoes_globais")
+}
+
+// ============================================================================
+// MODEL: EventoEspecial (NOVO - Sprint 6.0 - Multiplicadores de Prêmios)
+// ============================================================================
+/// Representa um período de tempo onde os prêmios da campanha são multiplicados.
+/// Ex: Entre 15/01 e 20/01, todas as cartelas pagarão 2x mais (moedinhas e pontos reais).
+///
+/// Funcionalidades:
+/// - Multiplicador aplicado automaticamente em cartelas validadas dentro do período
+/// - Visível para vendedores APENAS quando o evento está ativo (dataInicio <= agora <= dataFim)
+/// - Admin pode criar/editar eventos apenas para datas futuras ou dia atual
+/// - Sistema de notificações quando evento ativa
+/// - Banner especial com countdown na UI do vendedor
+model EventoEspecial {
+  /// ID único do evento (UUID v4)
+  id String @id @default(uuid())
+
+  /// Nome/título do evento (ex: "Super Semana 2x", "Black Friday 3x")
+  nome String
+
+  /// Descrição/motivação do evento (opcional)
+  descricao String? @db.Text
+
+  /// Multiplicador a ser aplicado (2.0 = 2x, 3.0 = 3x, etc.)
+  /// Aplica tanto em moedinhasPorCartela quanto em pontosReaisPorCartela
+  multiplicador Decimal @db.Decimal(5, 2)
+
+  /// Data/hora de início do evento
+  dataInicio DateTime
+
+  /// Data/hora de término do evento
+  dataFim DateTime
+
+  /// Indica se o evento está ativo (pode ser desativado manualmente pelo Admin)
+  ativo Boolean @default(true)
+
+  /// Cor do banner/badge (hex color, ex: "#FF5733")
+  corDestaque String @default("#FF5733")
+
+  /// ID da campanha à qual este evento pertence
+  campanhaId String
+
+  /// Referência à campanha
+  campanha Campanha @relation(fields: [campanhaId], references: [id], onDelete: Cascade)
+
+  /// Data de criação do registro
+  criadoEm DateTime @default(now())
+
+  /// Data da última atualização
+  atualizadoEm DateTime @updatedAt
+
+  @@index([campanhaId])
+  @@index([dataInicio, dataFim])
+  @@index([ativo])
+  @@map("eventos_especiais")
+}
+
+// ============================================================================
+// MODEL: CartelaConcluida (NOVO - Ledger de Segurança)
+// ============================================================================
+/// Livro-razão para registrar cartelas concluídas e prevenir pagamentos duplicados.
+/// Um vendedor só pode concluir a cartela N da campanha X uma única vez.
+model CartelaConcluida {
+  /// ID único do registro (UUID v4)
+  id            String   @id @default(uuid())
+  /// Data/hora em que a cartela foi concluída
+  dataConclusao DateTime @default(now())
+  /// Número da cartela concluída (1, 2, 3...)
+  numeroCartela Int
+
+  /// ID do vendedor
+  vendedorId    String
+  /// Relação com o usuário vendedor
+  vendedor      Usuario  @relation(fields: [vendedorId], references: [id])
+
+  /// ID da campanha
+  campanhaId    String
+  /// Relação com a campanha
+  campanha      Campanha @relation(fields: [campanhaId], references: [id])
+
+  @@unique([vendedorId, campanhaId, numeroCartela], map: "vendedor_campanha_cartela_unica")
+  @@map("cartelas_concluidas")
+}
+

@@ -1,0 +1,183 @@
+/* ==========================================
+   DIRETIVAS DO TAILWIND CSS
+   ========================================== */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ==========================================
+   VARIÁVEIS CSS PARA TEMAS (Light/Dark)
+   ========================================== */
+@layer base {
+  :root {
+    /* ===== LIGHT MODE ===== */
+    --background: 0 0% 100%;              /* Branco puro */
+    --foreground: 222.2 84% 4.9%;         /* Quase preto */
+
+    --card: 0 0% 100%;                    /* Branco para cards */
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    /* Cor Primária - Azul Vibrante */
+    --primary: 221.2 83.2% 53.3%;         /* Blue-600 */
+    --primary-foreground: 210 40% 98%;    /* Texto branco sobre azul */
+    --primary-light: 217.2 91.2% 59.8%;   /* Blue-400 */
+    --primary-dark: 224.3 76.3% 48%;      /* Blue-700 */
+
+    /* Cor Secundária - Cinza Neutro */
+    --secondary: 210 40% 96.1%;           /* Gray-100 */
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    /* Elementos Mutados */
+    --muted: 210 40% 96.1%;               /* Gray-100 */
+    --muted-foreground: 215.4 16.3% 46.9%; /* Gray-600 */
+
+    /* Elementos de Acento */
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+
+    /* Cores Semânticas */
+    --success: 142.1 76.2% 36.3%;         /* Green-600 */
+    --success-foreground: 138.5 76.5% 96.7%; /* Green-50 */
+
+    --warning: 32.1 94.6% 43.7%;          /* Orange-600 */
+    --warning-foreground: 33.3 100% 96.5%; /* Orange-50 */
+
+    --destructive: 0 84.2% 60.2%;         /* Red-500 */
+    --destructive-foreground: 0 85.7% 97.3%; /* Red-50 */
+
+    /* Bordas e Inputs */
+    --border: 214.3 31.8% 91.4%;          /* Gray-200 */
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;            /* Primary */
+
+    /* Border Radius Padrão */
+    --radius: 0.5rem;                     /* 8px */
+  }
+
+  .dark {
+    /* ===== DARK MODE ===== */
+    --background: 222.2 84% 4.9%;         /* Quase preto */
+    --foreground: 210 40% 98%;            /* Quase branco */
+
+    --card: 222.2 84% 7%;                 /* Cinza muito escuro */
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 7%;
+    --popover-foreground: 210 40% 98%;
+
+    /* Cor Primária - Azul mais claro no dark */
+    --primary: 217.2 91.2% 59.8%;         /* Blue-400 */
+    --primary-foreground: 222.2 84% 4.9%; /* Texto escuro sobre azul claro */
+    --primary-light: 214.3 83.2% 67.8%;   /* Blue-300 */
+    --primary-dark: 221.2 83.2% 53.3%;    /* Blue-600 */
+
+    /* Cor Secundária */
+    --secondary: 217.2 32.6% 17.5%;       /* Gray-800 */
+    --secondary-foreground: 210 40% 98%;
+
+    /* Elementos Mutados */
+    --muted: 217.2 32.6% 17.5%;           /* Gray-800 */
+    --muted-foreground: 215 20.2% 65.1%;  /* Gray-400 */
+
+    /* Elementos de Acento */
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+
+    /* Cores Semânticas */
+    --success: 142.1 70.6% 45.3%;         /* Green-500 */
+    --success-foreground: 144.3 60.7% 12%; /* Green-950 */
+
+    --warning: 32.1 94.6% 50%;            /* Orange-500 */
+    --warning-foreground: 20.5 90.2% 12.2%; /* Orange-950 */
+
+    --destructive: 0 62.8% 50.6%;         /* Red-600 */
+    --destructive-foreground: 0 85.7% 97.3%; /* Red-50 */
+
+    /* Bordas e Inputs */
+    --border: 217.2 32.6% 17.5%;          /* Gray-800 */
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;              /* Primary Dark */
+  }
+}
+
+/* ==========================================
+   ESTILOS GLOBAIS BASE
+   ========================================== */
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-inter), ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Suaviza a transição entre temas */
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  /* Scrollbar personalizada (Webkit) */
+  ::-webkit-scrollbar {
+    width: 0.5rem;
+  }
+
+  ::-webkit-scrollbar-track {
+    background-color: hsl(var(--secondary));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.3);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.5);
+  }
+}
+
+/* ==========================================
+   UTILIDADES PERSONALIZADAS
+   ========================================== */
+@layer utilities {
+  /* Efeito Glass Morphism */
+  .glass {
+    background-color: hsl(var(--background) / 0.7);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+    border: 1px solid hsl(var(--border) / 0.5);
+  }
+
+  .glass-dark {
+    background-color: hsl(var(--background) / 0.5);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid hsl(var(--border) / 0.3);
+  }
+
+  /* Gradientes Animados */
+  .gradient-primary {
+    background-image: linear-gradient(
+      to bottom right,
+      hsl(var(--primary)),
+      hsl(var(--primary-light)),
+      hsl(var(--primary-dark))
+    );
+  }
+
+  /* Text Gradient */
+  .text-gradient {
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-image: linear-gradient(
+      to right,
+      hsl(var(--primary)),
+      hsl(var(--primary-light))
+    );
+  }
+}

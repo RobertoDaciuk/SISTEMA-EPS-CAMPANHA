@@ -1,0 +1,145 @@
+# ============================================================================
+# DOCKER COMPOSE - EPS CAMPANHAS
+# ============================================================================
+# Descrição: Orquestra os serviços necessários para o ambiente de
+# desenvolvimento da plataforma "EPS Campanhas".
+#
+# Serviços Definidos:
+# - db: Banco de dados PostgreSQL 15 com persistência de dados
+#
+# Uso:
+# - Iniciar: docker-compose up -d
+# - Parar: docker-compose down
+# - Ver logs: docker-compose logs -f db
+# - Destruir tudo (incluindo volume): docker-compose down -v
+# ============================================================================
+
+version: '3.8'
+
+services:
+  # --------------------------------------------------------------------------
+  # SERVIÇO: PostgreSQL Database
+  # --------------------------------------------------------------------------
+  db:
+    # Imagem oficial do PostgreSQL versão 15 (LTS)
+    image: postgres:15-alpine
+    
+    # Nome do container para fácil identificação
+    container_name: eps_campanhas_postgres
+    
+    # Política de reinicialização: sempre reinicia se o container parar
+    restart: unless-stopped
+    
+    # Variáveis de ambiente para configuração do PostgreSQL
+    # IMPORTANTE: Quando usamos env_file, as variáveis são passadas
+    # diretamente ao container SEM necessidade de redeclaração
+    env_file:
+      - ./backend/.env
+    
+    # Mapeamento de portas: HOST:CONTAINER
+    # Permite acessar o banco via localhost:5432 no host
+    ports:
+      - "5432:5432"
+    
+    # Volumes para persistência de dados
+    # Os dados do banco não são perdidos ao parar o container
+    volumes:
+      # Volume nomeado para armazenar os dados do PostgreSQL
+      - postgres_data:/var/lib/postgresql/data
+      
+      # (Opcional) Script de inicialização customizado
+      # Descomente se precisar criar dados iniciais
+      # - ./backend/prisma/seed.sql:/docker-entrypoint-initdb.d/seed.sql
+    
+    # Health check: verifica se o banco está pronto para receber conexões
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eps_admin -d eps_campanhas_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    # Rede interna do Docker
+    # Permite comunicação entre serviços (útil quando adicionar backend container)
+    networks:
+      - eps_network
+
+  # --------------------------------------------------------------------------
+  # SERVIÇO: pgAdmin (Opcional - Interface Web para PostgreSQL)
+  # --------------------------------------------------------------------------
+  # Descomente para habilitar pgAdmin em http://localhost:5050
+  # pgadmin:
+  #   image: dpage/pgadmin4:latest
+  #   container_name: eps_campanhas_pgadmin
+  #   restart: unless-stopped
+  #   environment:
+  #     PGADMIN_DEFAULT_EMAIL: admin@epscampanhas.com
+  #     PGADMIN_DEFAULT_PASSWORD: admin123
+  #     PGADMIN_LISTEN_PORT: 5050
+  #   ports:
+  #     - "5050:5050"
+  #   volumes:
+  #     - pgadmin_data:/var/lib/pgadmin
+  #   networks:
+  #     - eps_network
+  #   depends_on:
+  #     - db
+
+# ----------------------------------------------------------------------------
+# VOLUMES - Persistência de Dados
+# ----------------------------------------------------------------------------
+volumes:
+  # Volume para dados do PostgreSQL
+  # Garante que os dados não sejam perdidos ao remover o container
+  postgres_data:
+    driver: local
+    name: eps_campanhas_postgres_data
+  
+  # Volume para dados do pgAdmin (se habilitado)
+  # pgadmin_data:
+  #   driver: local
+  #   name: eps_campanhas_pgadmin_data
+
+# ----------------------------------------------------------------------------
+# NETWORKS - Rede Interna
+# ----------------------------------------------------------------------------
+networks:
+  # Rede bridge para comunicação entre containers
+  # Permite que futuros serviços (backend, redis, etc.) se comuniquem
+  eps_network:
+    driver: bridge
+    name: eps_campanhas_network
+
+# ============================================================================
+# COMANDOS ÚTEIS
+# ============================================================================
+#
+# Iniciar todos os serviços em background:
+#   docker-compose up -d
+#
+# Ver logs em tempo real:
+#   docker-compose logs -f
+#   docker-compose logs -f db
+#
+# Parar todos os serviços:
+#   docker-compose stop
+#
+# Parar e remover containers:
+#   docker-compose down
+#
+# Parar, remover containers E apagar volumes (CUIDADO: apaga dados):
+#   docker-compose down -v
+#
+# Reconstruir imagens (após alterações no Dockerfile):
+#   docker-compose up -d --build
+#
+# Executar comandos dentro do container:
+#   docker-compose exec db psql -U eps_admin -d eps_campanhas_db
+#
+# Fazer backup do banco:
+#   docker-compose exec -T db pg_dump -U eps_admin eps_campanhas_db > backup.sql
+#
+# Restaurar backup:
+#   docker-compose exec -T db psql -U eps_admin eps_campanhas_db < backup.sql
+#
+# ============================================================================
